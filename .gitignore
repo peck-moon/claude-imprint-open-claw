@@ -46,3 +46,4 @@ conversations.json
 output/
 docs/tutorial-*.md
 memory/neural-state.bin
+memory/ollama-context.json

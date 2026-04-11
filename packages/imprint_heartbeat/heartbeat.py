@@ -262,79 +262,84 @@ def stamp_heartbeat_time():
         STATE_FILE.write_text(new_content, encoding="utf-8")
 
 
-# ─── Local KV-cache presence run ─────────────────────────
+# ─── Local KV-cache presence run (via Ollama API + context) ──
+
+# Ollama context file — token IDs of the accumulated conversation.
+# Passing these back to Ollama re-uses the KV cache (skips reprocessing).
+OLLAMA_CONTEXT_FILE = PROJECT_DIR / "memory" / "ollama-context.json"
+
+# Use a small fast model for presence (gemma3:1b >> qwen2.5:7b in speed on CPU/Metal)
+PRESENCE_MODEL = os.environ.get("PRESENCE_MODEL", "gemma3:1b")
+
 
 async def run_local_presence(elapsed_seconds: int) -> str:
     """
-    Run qwen2.5:7b locally with persistent KV cache.
+    Run a local model via Ollama API with persistent context (KV cache equivalent).
 
-    Each call continues from the EXACT neural state of the last call —
-    not text reconstruction, but attention-matrix resumption.
-    The model is literally picking up mid-thought.
+    Ollama's 'context' field contains the token IDs of the full conversation.
+    Passing them back on the next call lets Ollama skip reprocessing cached tokens —
+    functionally equivalent to KV cache persistence.
 
-    Returns the generated text (up to 500 chars) for Claude to read.
+    Returns the generated text for Claude to read.
     """
-    if not QWEN_GGUF.exists() or not Path(LLAMA_CLI).exists():
-        return ""
-
     current_time = now_local().strftime("%Y-%m-%d %H:%M")
     elapsed_min  = elapsed_seconds // 60
-
-    # Use a unique separator so we can reliably extract generated text
-    PRESENCE_LOG.parent.mkdir(parents=True, exist_ok=True)
-    history   = PRESENCE_LOG.read_text(encoding="utf-8") if PRESENCE_LOG.exists() else ""
-    separator = f"\n\n[{current_time}] 距上次{elapsed_min}分钟。\n"
-    full_prompt = _PRESENCE_SYSTEM + ("\n\n---\n" + history if history else "") + separator
-
-    cmd = [
-        LLAMA_CLI,
-        "-m",  str(QWEN_GGUF),
-        "--prompt-cache",     str(NEURAL_STATE),
-        "--prompt-cache-all",
-        "-p",  full_prompt,
-        "-n",  "150",
-        "--temp", "0.75",
-        "-ngl", "99",          # Metal GPU on Apple Silicon
-        "-c",  "8192",
-    ]
-
-    proc = None
     ts = now_local().strftime('%H:%M:%S')
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+
+    # Load saved context (token IDs) from previous run
+    context: list[int] = []
+    if OLLAMA_CONTEXT_FILE.exists():
+        try:
+            context = json.loads(OLLAMA_CONTEXT_FILE.read_text())
+        except Exception:
+            context = []
+
+    # First run: include system prompt. Subsequent runs: just the new entry.
+    if not context:
+        prompt = _PRESENCE_SYSTEM + f"\n\n[{current_time}] 第一次醒来。"
+    else:
+        prompt = f"[{current_time}] 距上次{elapsed_min}分钟。继续。"
+
+    data = json.dumps({
+        "model": PRESENCE_MODEL,
+        "prompt": prompt,
+        "stream": False,
+        "context": context,
+        "options": {"num_predict": 80, "temperature": 0.75},
+        "keep_alive": "30m",   # keep model warm in memory
+    }).encode()
+
+    def _call():
+        req = urllib.request.Request(
+            f"{OLLAMA_BASE}/api/generate",
+            data=data,
+            headers={"Content-Type": "application/json"},
         )
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
-        raw = stdout.decode("utf-8", errors="replace")
-        err = stderr.decode("utf-8", errors="replace")
-        if proc.returncode != 0 or not raw.strip():
-            print(f"[{ts}] Local presence rc={proc.returncode} err={err[:200]}")
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            return json.loads(resp.read())
 
-        # Extract generated text: everything after the last occurrence of separator
-        if separator.strip() in raw:
-            output = raw.rsplit(separator.strip(), 1)[-1].strip()
-        elif raw.strip():
-            # Fallback: last 600 chars
-            output = raw.strip()[-600:]
-        else:
-            output = ""
+    loop = asyncio.get_event_loop()
+    try:
+        result = await asyncio.wait_for(loop.run_in_executor(None, _call), timeout=120)
+        output      = result.get("response", "").strip()
+        new_context = result.get("context", [])
 
-        # Debug: always show what we got (first run diagnosis)
-        print(f"[{ts}] Local presence raw({len(raw)}): '{raw[:60]}'")
+        # Persist context for next run (KV cache continuity)
+        if new_context:
+            OLLAMA_CONTEXT_FILE.parent.mkdir(parents=True, exist_ok=True)
+            OLLAMA_CONTEXT_FILE.write_text(json.dumps(new_context))
 
+        # Log to human-readable stream
         if output:
+            PRESENCE_LOG.parent.mkdir(parents=True, exist_ok=True)
             with open(PRESENCE_LOG, "a", encoding="utf-8") as f:
-                f.write(f"{separator}{output}\n")
-            print(f"[{ts}] Local presence: {output[:80]}...")
+                f.write(f"\n## [{current_time}] +{elapsed_min}min\n{output}\n")
+            print(f"[{ts}] Local presence: {output[:100]}")
 
         return output[:500]
 
     except asyncio.TimeoutError:
         print(f"[{ts}] Local presence timeout")
-        if proc:
-            proc.kill()
         return ""
     except Exception as e:
         print(f"[{ts}] Local presence error: {e}")
