@@ -316,7 +316,7 @@ async def run_heartbeat():
 
     mcp_config = json.dumps({"mcpServers": mcp_servers})
     cmd.extend(["--mcp-config", mcp_config])
-    cmd.extend(["--permission-mode", "auto"])
+    cmd.extend(["--permission-mode", "bypassPermissions"])
 
     env = {**os.environ}
     env.pop("CLAUDECODE", None)
