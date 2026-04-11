@@ -96,11 +96,13 @@ def read_g_register() -> str:
     content = STATE_FILE.read_text(encoding="utf-8")
     if "## G" not in content:
         return ""
-    g_section = content.split("## G")[1].split("\n##")[0].strip()
-    # Ignore placeholder text
-    if not g_section or "等待写入" in g_section or "待激发的冲动" in g_section:
-        return ""
-    return g_section
+    # Split on ## G header, take the section body, stop at next ## header
+    g_section = content.split("## G")[1].split("\n##")[0]
+    # Skip the first line (subtitle like "· 待激发的冲动") and empty lines
+    lines = g_section.split("\n")[1:]
+    real_lines = [l.strip() for l in lines if l.strip() and l.strip() != "（等待写入）"]
+    result = "\n".join(real_lines)
+    return result if len(result) > 5 else ""
 
 
 def read_last_heartbeat_time() -> datetime | None:
@@ -350,10 +352,13 @@ async def run_heartbeat():
         try:
             result = json.loads(output)
             response_text = result.get("result", "")
+            cost = result.get("total_cost_usd", 0)
+            turns = result.get("num_turns", 0)
+            print(f"[{ts}] turns={turns} cost=${cost:.4f}")
             if "HEARTBEAT_OK" in response_text:
                 print(f"[{ts}] Heartbeat OK")
             else:
-                print(f"[{ts}] Heartbeat: {response_text[:120]}")
+                print(f"[{ts}] Heartbeat: {response_text[:200]}")
         except json.JSONDecodeError:
             if "HEARTBEAT_OK" in output:
                 print(f"[{ts}] Heartbeat OK")
