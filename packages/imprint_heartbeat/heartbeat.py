@@ -24,8 +24,19 @@ PROJECT_DIR = PACKAGE_DIR.parent.parent  # packages/imprint_heartbeat -> project
 DATA_DIR = Path(os.environ.get("IMPRINT_DATA_DIR", str(Path.home() / ".imprint")))
 
 GLOBAL_CLAUDE_MD = Path.home() / ".claude" / "CLAUDE.md"
-HEARTBEAT_FILE = PACKAGE_DIR / "HEARTBEAT.md"
+HEARTBEAT_FILE = PROJECT_DIR / "HEARTBEAT.md"
 MEMORY_INDEX = DATA_DIR / "MEMORY.md"
+STATE_FILE = PROJECT_DIR / "memory" / "state.md"
+
+# ─── Load .env ───────────────────────────────────────────
+_env_path = PROJECT_DIR / ".env"
+if _env_path.exists():
+    with open(_env_path) as _f:
+        for _line in _f:
+            _line = _line.strip()
+            if _line and not _line.startswith("#") and "=" in _line:
+                _k, _v = _line.split("=", 1)
+                os.environ.setdefault(_k.strip(), _v.strip())
 
 CLAUDE_BIN = shutil.which("claude") or os.path.expanduser("~/.local/bin/claude")
 
@@ -71,10 +82,11 @@ def save_session_id(sid: str):
 
 
 def build_heartbeat_prompt() -> str:
-    """Build heartbeat prompt with personality + rules + memory + checklist"""
+    """Build heartbeat prompt with personality + rules + memory + state + checklist"""
     claude_md = GLOBAL_CLAUDE_MD.read_text(encoding="utf-8") if GLOBAL_CLAUDE_MD.exists() else ""
     heartbeat_md = HEARTBEAT_FILE.read_text(encoding="utf-8") if HEARTBEAT_FILE.exists() else ""
     memory_ctx = MEMORY_INDEX.read_text(encoding="utf-8") if MEMORY_INDEX.exists() else "(No memory index)"
+    state_ctx = STATE_FILE.read_text(encoding="utf-8") if STATE_FILE.exists() else "(No state file yet)"
     current_time = now_local().strftime("%Y-%m-%d %H:%M (%A)")
     quiet = is_quiet_hours()
 
@@ -86,14 +98,18 @@ Current time: {current_time}
 ## Identity and Rules
 {claude_md}
 
-## Memory
+## Current State (SCDG)
+{state_ctx}
+
+## Memory Index
 {memory_ctx}
 
-## Heartbeat Checklist
+## Heartbeat Protocol
 {heartbeat_md}
 
 ## Instructions
-1. Go through the heartbeat checklist
+1. Read your current state (SCDG above)
+2. Go through the heartbeat protocol
 2. Decide if any action or notification is needed
 3. If notification needed, use Telegram reply tool{f' (chat_id {TELEGRAM_CHAT_ID})' if TELEGRAM_CHAT_ID else ''}
 4. If there's new important information, save it to memory
@@ -121,23 +137,15 @@ async def run_heartbeat():
 
     # Build MCP config with modular servers
     mcp_servers = {
-        "telegram": {
-            "command": "bun",
-            "args": ["run", "--cwd",
-                     str(_get_telegram_plugin_dir()),
-                     "--shell=bun", "--silent", "start"]
-        },
         "imprint-memory": {
             "command": "imprint-memory",
             "args": []
         },
-    }
-    # Add telegram send server if available
-    if TELEGRAM_SERVER.exists():
-        mcp_servers["imprint-telegram"] = {
+        "imprint-utils": {
             "command": "python3",
-            "args": [str(TELEGRAM_SERVER)]
-        }
+            "args": [str(PROJECT_DIR / "packages" / "imprint_utils" / "server.py")]
+        },
+    }
 
     mcp_config = json.dumps({"mcpServers": mcp_servers})
     cmd.extend(["--mcp-config", mcp_config])
