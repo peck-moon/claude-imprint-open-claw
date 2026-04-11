@@ -304,10 +304,13 @@ async def run_local_presence(elapsed_seconds: int) -> str:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,  # suppress llama.cpp loading noise
+            stderr=asyncio.subprocess.PIPE,
         )
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=120)
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
         raw = stdout.decode("utf-8", errors="replace")
+        err = stderr.decode("utf-8", errors="replace")
+        if proc.returncode != 0 or not raw.strip():
+            print(f"[{ts}] Local presence rc={proc.returncode} err={err[:200]}")
 
         # Extract generated text: everything after the last occurrence of separator
         if separator.strip() in raw:
