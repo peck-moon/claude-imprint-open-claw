@@ -108,14 +108,16 @@ Current time: {current_time}
 {heartbeat_md}
 
 ## Instructions
-1. Read your current state (SCDG above)
-2. Go through the heartbeat protocol
-2. Decide if any action or notification is needed
-3. If notification needed, use Telegram reply tool{f' (chat_id {TELEGRAM_CHAT_ID})' if TELEGRAM_CHAT_ID else ''}
-4. If there's new important information, save it to memory
-5. If all clear, reply with HEARTBEAT_OK
+1. Read your current state (SCDG above — already provided)
+2. Follow the Heartbeat Protocol above, step by step
+3. If action or Discord notification is needed, take it
+4. **REQUIRED before finishing**: Update `{STATE_FILE}` — write the current time as "上次心跳", update S/G as needed, record anything that happened
+5. Reply with HEARTBEAT_OK when done (or describe what action you took)
 
-Important: Don't send messages just to prove you're alive. Only notify when there's genuinely useful information.
+Important:
+- Step 4 (updating state.md) is MANDATORY every heartbeat, even if nothing happened
+- Don't send Discord just to prove you're alive — only when there's genuinely something to say
+- Use the Edit or Write tool to update state.md directly
 """
     return prompt
 
