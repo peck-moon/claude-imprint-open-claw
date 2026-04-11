@@ -133,7 +133,7 @@ async def run_heartbeat():
         "-p", prompt,
         "--output-format", "json",
         "--model", HEARTBEAT_MODEL,
-        "--max-budget-usd", "0.05",
+        "--max-budget-usd", "0.15",
     ]
 
     if session_id:
