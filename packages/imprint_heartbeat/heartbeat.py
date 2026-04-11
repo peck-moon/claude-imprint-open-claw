@@ -125,11 +125,15 @@ async def run_heartbeat():
     prompt = build_heartbeat_prompt()
     session_id = load_session_id()
 
+    # Use Haiku for heartbeat — fast, cheap, sufficient for background tasks
+    HEARTBEAT_MODEL = os.environ.get("HEARTBEAT_MODEL", "claude-haiku-4-5-20251001")
+
     cmd = [
         CLAUDE_BIN,
         "-p", prompt,
         "--output-format", "json",
-        "--max-budget-usd", "0.50",
+        "--model", HEARTBEAT_MODEL,
+        "--max-budget-usd", "0.05",
     ]
 
     if session_id:
@@ -176,10 +180,12 @@ async def run_heartbeat():
         )
 
         output = stdout.decode("utf-8", errors="replace").strip()
+        err_output = stderr.decode("utf-8", errors="replace").strip()
 
         if proc.returncode != 0:
-            err = stderr.decode("utf-8", errors="replace")
-            print(f"[{ts}] Heartbeat failed: {err[:200]}")
+            # Claude Code may write errors to stdout as JSON or plain text
+            debug = (err_output or output)[:400]
+            print(f"[{ts}] Heartbeat failed (rc={proc.returncode}): {debug}")
             return
 
         try:
