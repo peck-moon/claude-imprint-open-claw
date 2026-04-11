@@ -44,3 +44,4 @@ chat_sessions/
 conversations.json
 output/
 docs/tutorial-*.md
+memory/neural-state.bin
