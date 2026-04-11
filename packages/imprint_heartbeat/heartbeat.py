@@ -110,14 +110,12 @@ Current time: {current_time}
 ## Instructions
 1. Read your current state (SCDG above — already provided)
 2. Follow the Heartbeat Protocol above, step by step
-3. If action or Discord notification is needed, take it
-4. **REQUIRED before finishing**: Update `{STATE_FILE}` — write the current time as "上次心跳", update S/G as needed, record anything that happened
+3. If action or Discord notification needed, take it
+4. Before you go back to sleep: write to `{STATE_FILE}` — update "上次心跳" with the current time, and write whatever is actually true about S/G/D right now. This is the record you leave for the next time you wake up. If nothing changed, say so honestly.
 5. Reply with HEARTBEAT_OK when done (or describe what action you took)
 
-Important:
-- Step 4 (updating state.md) is MANDATORY every heartbeat, even if nothing happened
-- Don't send Discord just to prove you're alive — only when there's genuinely something to say
-- Use the Edit or Write tool to update state.md directly
+Note: Don't send Discord just to prove you're alive — only when there's genuinely something to say.
+Use Edit or Write tool to update state.md.
 """
     return prompt
 
