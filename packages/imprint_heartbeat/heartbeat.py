@@ -218,6 +218,34 @@ async def check_and_decide() -> tuple[bool, str]:
     return True, ", ".join(reasons)
 
 
+# ─── State stamp (Python-side, always runs) ───────────────
+
+def stamp_heartbeat_time():
+    """
+    Write the current timestamp into state.md's T table.
+    This runs from Python — guaranteed, regardless of what Claude does.
+    Claude's job is to update S/G/D with genuine content.
+    """
+    if not STATE_FILE.exists():
+        return
+    content = STATE_FILE.read_text(encoding="utf-8")
+    ts = now_local().strftime("%Y-%m-%d %H:%M")
+    # Replace the "上次心跳" row in the T table
+    new_content = re.sub(
+        r"(\| 上次心跳\s*\|)[^\n]*",
+        f"| 上次心跳 | {ts} |",
+        content,
+    )
+    # Also update the top-level "上次更新" line
+    new_content = re.sub(
+        r"\*上次更新：[^*]*\*",
+        f"*上次更新：{ts}*",
+        new_content,
+    )
+    if new_content != content:
+        STATE_FILE.write_text(new_content, encoding="utf-8")
+
+
 # ─── Heartbeat prompt ─────────────────────────────────────
 
 def build_heartbeat_prompt() -> str:
@@ -246,14 +274,14 @@ Current time: {current_time}
 {heartbeat_md}
 
 ## Instructions
-1. Read your current state (SCDG above — already provided)
-2. Follow the Heartbeat Protocol above, step by step
-3. If action or Discord notification needed, take it
-4. Before you go back to sleep: write to `{STATE_FILE}` — update "上次心跳" with the current time, and write whatever is actually true about S/G/D right now. This is the record you leave for the next time you wake up. If nothing changed, say so honestly.
-5. Reply with HEARTBEAT_OK when done (or describe what action you took)
+1. Your state is already loaded above (SCDG). The heartbeat timestamp has already been written.
+2. Follow the Heartbeat Protocol step by step.
+3. If Discord notification is genuinely warranted, use the send_discord tool (imprint-utils).
+4. Use the Edit tool to update `{STATE_FILE}` — fill in S (what you're oriented toward right now), G (any new impulses or remove explored ones), D (momentum). Write what's actually true, even if it's just "nothing new".
+5. Reply HEARTBEAT_OK when done.
 
-Note: Don't send Discord just to prove you're alive — only when there's genuinely something to say.
-Use Edit or Write tool to update state.md.
+Don't send Discord just to prove you're alive.
+The S/G/D update is your main job this cycle — the timestamp is handled.
 """
 
 
@@ -374,6 +402,7 @@ async def presence_loop():
             if should_activate:
                 ts = now_local().strftime('%H:%M:%S')
                 print(f"[{ts}] Triggered ({reason})")
+                stamp_heartbeat_time()  # Python writes timestamp — always reliable
                 await run_heartbeat()
                 last_inference_at = time.time()
 
