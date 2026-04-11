@@ -280,22 +280,22 @@ async def run_local_presence(elapsed_seconds: int) -> str:
     current_time = now_local().strftime("%Y-%m-%d %H:%M")
     elapsed_min  = elapsed_seconds // 60
 
-    # Build the accumulated prompt: system prefix + all previous entries + new entry
+    # Use a unique separator so we can reliably extract generated text
     PRESENCE_LOG.parent.mkdir(parents=True, exist_ok=True)
-    history = PRESENCE_LOG.read_text(encoding="utf-8") if PRESENCE_LOG.exists() else ""
-    new_entry   = f"\n\n[{current_time}] 距上次{elapsed_min}分钟。"
-    full_prompt = _PRESENCE_SYSTEM + ("\n\n---\n" + history if history else "") + new_entry
+    history   = PRESENCE_LOG.read_text(encoding="utf-8") if PRESENCE_LOG.exists() else ""
+    separator = f"\n\n[{current_time}] 距上次{elapsed_min}分钟。\n"
+    full_prompt = _PRESENCE_SYSTEM + ("\n\n---\n" + history if history else "") + separator
 
     cmd = [
         LLAMA_CLI,
         "-m",  str(QWEN_GGUF),
         "--prompt-cache",     str(NEURAL_STATE),
-        "--prompt-cache-all",            # save generated tokens too
+        "--prompt-cache-all",
         "-p",  full_prompt,
-        "-n",  "150",                    # generate up to 150 tokens
+        "-n",  "150",
         "--temp", "0.75",
-        "-ngl", "99",                    # Metal GPU on Apple Silicon
-        "-c",  "8192",                   # context window
+        "-ngl", "99",          # Metal GPU on Apple Silicon
+        "-c",  "8192",
     ]
 
     proc = None
@@ -304,21 +304,26 @@ async def run_local_presence(elapsed_seconds: int) -> str:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,  # suppress llama.cpp loading noise
         )
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=120)
         raw = stdout.decode("utf-8", errors="replace")
 
-        # llama-cli echoes the prompt; strip it to get only generated text
-        if full_prompt in raw:
-            output = raw[len(full_prompt):].strip()
+        # Extract generated text: everything after the last occurrence of separator
+        if separator.strip() in raw:
+            output = raw.rsplit(separator.strip(), 1)[-1].strip()
+        elif raw.strip():
+            # Fallback: last 600 chars
+            output = raw.strip()[-600:]
         else:
-            # Fallback: take the last 800 chars (generated part is at the end)
-            output = raw[-800:].strip()
+            output = ""
+
+        # Debug: always show what we got (first run diagnosis)
+        print(f"[{ts}] Local presence raw({len(raw)}): '{raw[:60]}'")
 
         if output:
             with open(PRESENCE_LOG, "a", encoding="utf-8") as f:
-                f.write(f"\n\n[{current_time}]\n{output}")
+                f.write(f"{separator}{output}\n")
             print(f"[{ts}] Local presence: {output[:80]}...")
 
         return output[:500]
