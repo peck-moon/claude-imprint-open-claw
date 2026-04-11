@@ -1,20 +1,53 @@
 #!/usr/bin/env python3
 """
 imprint-utils — MCP Server
-Utility tools: system status, web reading, Spotify control.
+Utility tools: system status, web reading, Spotify control, Discord notifications.
 
 Usage:
   python3 server.py    # stdio mode
 """
 
+import os
+import json
 import subprocess
 import sys
 import urllib.request
+import urllib.parse
 from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
 mcp = FastMCP("imprint-utils")
+
+
+@mcp.tool()
+def send_discord(message: str, title: str = "", color: int = 5793266) -> str:
+    """Send a notification to Discord via webhook.
+    message: the text to send.
+    title: optional embed title.
+    color: embed color as integer (default: soft blue 0x587FF2).
+    Requires DISCORD_WEBHOOK_URL environment variable."""
+    webhook_url = os.environ.get("DISCORD_WEBHOOK_URL", "")
+    if not webhook_url:
+        return "Error: DISCORD_WEBHOOK_URL not set"
+
+    payload = {"embeds": [{"description": message, "color": color}]}
+    if title:
+        payload["embeds"][0]["title"] = title
+
+    data = json.dumps(payload).encode()
+    try:
+        req = urllib.request.Request(
+            webhook_url, data=data,
+            headers={"Content-Type": "application/json"}
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            if resp.status in (200, 204):
+                return "Message sent to Discord"
+            return f"Error: HTTP {resp.status}"
+    except Exception as e:
+        return f"Error: {str(e)}"
+
 
 
 @mcp.tool()

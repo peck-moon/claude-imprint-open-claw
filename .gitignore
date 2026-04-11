@@ -1,3 +1,6 @@
+# Environment variables (contain secrets)
+.env
+
 # Database
 memory.db
 memory.db-wal
