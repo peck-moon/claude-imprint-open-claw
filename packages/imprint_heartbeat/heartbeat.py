@@ -290,10 +290,11 @@ The S/G/D update is your main job this cycle — the timestamp is handled.
 async def run_heartbeat():
     """Execute one full Claude inference cycle."""
     prompt = build_heartbeat_prompt()
-    session_id = load_session_id()
 
     HEARTBEAT_MODEL = os.environ.get("HEARTBEAT_MODEL", "claude-haiku-4-5-20251001")
 
+    # No --resume: each heartbeat starts fresh so Claude actually reads the prompt
+    # and uses tools. Continuity comes from state.md + memory, not from session cache.
     cmd = [
         CLAUDE_BIN,
         "-p", prompt,
@@ -301,9 +302,6 @@ async def run_heartbeat():
         "--model", HEARTBEAT_MODEL,
         "--max-budget-usd", "0.15",
     ]
-
-    if session_id:
-        cmd.extend(["--resume", session_id])
 
     mcp_servers = {
         "imprint-memory": {
@@ -351,9 +349,6 @@ async def run_heartbeat():
 
         try:
             result = json.loads(output)
-            new_session_id = result.get("session_id")
-            if new_session_id:
-                save_session_id(new_session_id)
             response_text = result.get("result", "")
             if "HEARTBEAT_OK" in response_text:
                 print(f"[{ts}] Heartbeat OK")
