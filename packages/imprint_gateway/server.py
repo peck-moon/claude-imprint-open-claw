@@ -114,4 +114,11 @@ if __name__ == "__main__":
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8000
     print(f"imprint-gateway running on port {port}")
     print(f"Discord: {'configured ✓' if os.environ.get('DISCORD_WEBHOOK_URL') else 'DISCORD_WEBHOOK_URL not set ✗'}")
-    mcp.run(transport="sse", host="0.0.0.0", port=port)
+    import inspect
+    run_params = inspect.signature(mcp.run).parameters
+    if "host" in run_params:
+        mcp.run(transport="sse", host="0.0.0.0", port=port)
+    else:
+        os.environ["HOST"] = "0.0.0.0"
+        os.environ["PORT"] = str(port)
+        mcp.run(transport="sse")
