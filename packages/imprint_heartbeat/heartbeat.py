@@ -356,14 +356,18 @@ async def run_local_presence(elapsed_seconds: int) -> str:
             OLLAMA_CONTEXT_FILE.parent.mkdir(parents=True, exist_ok=True)
             OLLAMA_CONTEXT_FILE.write_text(json.dumps(new_context))
 
-        # Log to human-readable stream
+        # Log to human-readable stream (for your own reading; not sent to Claude)
         if output:
             PRESENCE_LOG.parent.mkdir(parents=True, exist_ok=True)
             with open(PRESENCE_LOG, "a", encoding="utf-8") as f:
                 f.write(f"\n## [{current_time}] +{elapsed_min}min\n{output}\n")
-            print(f"[{ts}] Local presence: {output[:100]}")
 
-        return output[:500]
+        ctx_len = len(new_context) if new_context else len(context)
+        print(f"[{ts}] Local presence: context={ctx_len} tokens (silent)")
+
+        # Return empty — local model's KV state accumulates for itself only.
+        # Without text injection, it has no effect on Claude (API boundary).
+        return ""
 
     except asyncio.TimeoutError:
         print(f"[{ts}] Local presence timeout")

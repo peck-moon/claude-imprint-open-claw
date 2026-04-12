@@ -112,6 +112,37 @@ def system_status() -> str:
             f"Disk: {disk.used/1e9:.0f}/{disk.total/1e9:.0f}GB ({disk.percent}%)")
 
 
+# ── Message bus ───────────────────────────────────────────────────────────────
+
+@mcp.tool()
+def message_bus_post(source: str, direction: str, content: str) -> str:
+    """Write a message to the local message bus.
+    source: label for the channel (e.g. discord, telegram, cc)
+    direction: 'out' = to be sent, 'in' = received
+    Discord delivery: source='discord', direction='out' — the presence daemon
+    will pick it up within 10 seconds and forward to the Discord webhook."""
+    try:
+        from imprint_memory.bus import bus_post
+        bus_post(source, direction, content)
+        return f"Written to bus [{source}/{direction}]"
+    except ImportError:
+        return "Error: imprint-memory not installed"
+    except Exception as e:
+        return f"Error: {e}"
+
+
+@mcp.tool()
+def message_bus_read(limit: int = 20) -> str:
+    """Read recent messages from the message bus."""
+    try:
+        from imprint_memory.bus import bus_format
+        return bus_format(limit)
+    except ImportError:
+        return "Error: imprint-memory not installed"
+    except Exception as e:
+        return f"Error: {e}"
+
+
 # ── State file bridge ─────────────────────────────────────────────────────────
 
 @mcp.tool()
