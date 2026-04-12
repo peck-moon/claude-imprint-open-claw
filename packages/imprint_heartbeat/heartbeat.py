@@ -270,6 +270,24 @@ def stamp_heartbeat_time():
     if new_content != content:
         STATE_FILE.write_text(new_content, encoding="utf-8")
 
+    # Sync current state into memory DB (upsert: one record, always fresh).
+    # Claude.ai can find it via memory_search("state") or memory_search("SCDG").
+    if DB_PATH.exists():
+        try:
+            db = sqlite3.connect(str(DB_PATH), timeout=5)
+            db.execute(
+                "DELETE FROM memories WHERE source='heartbeat' AND category='state'"
+            )
+            db.execute(
+                "INSERT INTO memories (content, category, source, tags, importance, created_at)"
+                " VALUES (?, 'state', 'heartbeat', '[\"SCDG\",\"state\"]', 9, ?)",
+                (new_content[:3000], now_local().strftime("%Y-%m-%d %H:%M")),
+            )
+            db.commit()
+            db.close()
+        except Exception:
+            pass
+
 
 # ─── Local KV-cache presence run (via Ollama API + context) ──
 

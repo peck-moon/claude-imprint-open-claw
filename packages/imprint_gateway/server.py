@@ -23,11 +23,15 @@ if os.path.exists(_env_file):
                 os.environ.setdefault(k.strip(), v.strip())
 
 import json
+import re
 import urllib.request
 import urllib.parse
 from mcp.server.fastmcp import FastMCP
 
 mcp = FastMCP("imprint-gateway")
+
+_PROJECT_ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", ".."))
+_STATE_FILE = os.path.join(_PROJECT_ROOT, "memory", "state.md")
 
 # ── Discord ───────────────────────────────────────────────────────────────────
 
@@ -106,6 +110,46 @@ def system_status() -> str:
     return (f"CPU: {cpu}% | "
             f"RAM: {ram.used/1e9:.1f}/{ram.total/1e9:.1f}GB ({ram.percent}%) | "
             f"Disk: {disk.used/1e9:.0f}/{disk.total/1e9:.0f}GB ({disk.percent}%)")
+
+
+# ── State file bridge ─────────────────────────────────────────────────────────
+
+@mcp.tool()
+def read_state() -> str:
+    """Read the current SCDG consciousness state file (memory/state.md).
+    Returns the full content so you can see S (orientation), C (constraints),
+    D (momentum), G (impulses), and T (time table)."""
+    if not os.path.exists(_STATE_FILE):
+        return "State file not found. The heartbeat daemon may not have run yet."
+    with open(_STATE_FILE, encoding="utf-8") as f:
+        return f.read()
+
+
+@mcp.tool()
+def update_state(section: str, content: str) -> str:
+    """Overwrite one SCDG section in memory/state.md.
+    section: one of S, C, D, G  (case-insensitive, just the letter).
+    content: the new body text for that section.
+    The section header and surrounding structure are preserved."""
+    section = section.strip().upper()
+    if section not in {"S", "C", "D", "G"}:
+        return "Error: section must be one of S, C, D, G"
+    if not os.path.exists(_STATE_FILE):
+        return "Error: state file not found"
+
+    text = open(_STATE_FILE, encoding="utf-8").read()
+
+    # Match "## S · ..." header through the next "## " header (or end of file)
+    pattern = rf"(## {section}[^\n]*\n)(.*?)(?=\n## |\Z)"
+    replacement = rf"\g<1>\n{content.strip()}\n"
+    new_text, count = re.subn(pattern, replacement, text, flags=re.DOTALL)
+
+    if not count:
+        return f"Error: could not find section {section} in state.md"
+
+    with open(_STATE_FILE, "w", encoding="utf-8") as f:
+        f.write(new_text)
+    return f"Section {section} updated ✓"
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
