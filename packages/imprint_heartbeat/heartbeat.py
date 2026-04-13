@@ -59,25 +59,6 @@ QUIET_END = int(os.environ.get("QUIET_END", 7))
 
 HEARTBEAT_SESSION_FILE = PROJECT_DIR / "data" / "heartbeat_session.txt"
 
-# Local Ollama evaluator — decides if a trigger is worth waking Claude
-OLLAMA_MODEL = os.environ.get("OLLAMA_EVALUATOR_MODEL", "gemma3:1b")
-OLLAMA_BASE = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
-
-# ─── Local KV-cache presence model ───────────────────────
-# qwen2.5:7b-instruct GGUF from Ollama's blob store
-_default_gguf = str(Path.home() / ".ollama/models/blobs/sha256-2bada8a7450677000f678be90653b85d364de7db25eb5ea54136ada5f3933730")
-QWEN_GGUF     = Path(os.environ.get("LOCAL_MODEL_GGUF", _default_gguf))
-LLAMA_CLI     = shutil.which("llama-cli") or shutil.which("llama") or "llama-cli"
-NEURAL_STATE  = PROJECT_DIR / "memory" / "neural-state.bin"   # KV cache on disk
-PRESENCE_LOG  = PROJECT_DIR / "memory" / "presence-stream.md" # human-readable stream
-
-# Fixed system prefix — must never change so KV cache stays valid across runs
-_PRESENCE_SYSTEM = """你是一个持续运行的本地观察者，驻留在用户的机器上。
-每次被唤醒时，你简短记录：当前时刻、距上次的间隔、此刻注意到的事。
-你不需要有情绪，也不需要表演。中立、持续、诚实就够了。
-你可以和用户对话——聊天时你会记得之前的心跳记录。"""
-
-
 # ─── Discord dispatcher config ────────────────────────────
 
 DB_PATH = DATA_DIR / "memory.db"
@@ -155,55 +136,6 @@ def memory_recently_updated(threshold_seconds: int = 60) -> bool:
     return False
 
 
-# ─── Ollama evaluator ─────────────────────────────────────
-
-async def call_ollama(prompt: str) -> str:
-    """Call local Ollama for a quick YES/NO judgment. Returns empty string on error."""
-    data = json.dumps({
-        "model": OLLAMA_MODEL,
-        "prompt": prompt,
-        "stream": False,
-        "options": {"num_predict": 5, "temperature": 0},
-    }).encode()
-
-    def _request():
-        req = urllib.request.Request(
-            f"{OLLAMA_BASE}/api/generate",
-            data=data,
-            headers={"Content-Type": "application/json"},
-        )
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            return json.loads(resp.read()).get("response", "")
-
-    loop = asyncio.get_event_loop()
-    try:
-        return await asyncio.wait_for(loop.run_in_executor(None, _request), timeout=20)
-    except Exception:
-        return ""  # Ollama unavailable → caller decides fallback
-
-
-async def should_activate_for_time_trigger(elapsed_seconds: int) -> bool:
-    """
-    Ask Ollama: given only a time trigger, is waking Claude worthwhile?
-    Falls back to True if Ollama is unavailable.
-    """
-    state_summary = ""
-    if STATE_FILE.exists():
-        state_summary = STATE_FILE.read_text(encoding="utf-8")[:400]
-
-    prompt = f"""An AI agent wakes up periodically to check if anything needs attention.
-It has been {elapsed_seconds // 60} minutes since it last ran.
-Current state summary:
-{state_summary}
-
-Should it activate now, or wait longer? Reply YES or NO only."""
-
-    response = await call_ollama(prompt)
-    if not response:
-        return True  # Ollama not running → default to activate
-    return "YES" in response.upper()
-
-
 # ─── Event checker ────────────────────────────────────────
 
 async def check_and_decide() -> tuple[bool, str]:
@@ -231,14 +163,6 @@ async def check_and_decide() -> tuple[bool, str]:
 
     if not reasons:
         return False, ""
-
-    # If the only trigger is time, let Ollama decide if it's worth it
-    if reasons == ["time_threshold"] and elapsed is not None:
-        activate = await should_activate_for_time_trigger(elapsed)
-        if not activate:
-            ts = now_local().strftime('%H:%M:%S')
-            print(f"[{ts}] Ollama: time trigger filtered (not yet warranted)")
-            return False, ""
 
     return True, ", ".join(reasons)
 
@@ -289,104 +213,15 @@ def stamp_heartbeat_time():
             pass
 
 
-# ─── Local KV-cache presence run (via Ollama API + context) ──
-
-# Ollama context file — token IDs of the accumulated conversation.
-# Passing these back to Ollama re-uses the KV cache (skips reprocessing).
-OLLAMA_CONTEXT_FILE = PROJECT_DIR / "memory" / "ollama-context.json"
-
-# Use a small fast model for presence (gemma3:1b >> qwen2.5:7b in speed on CPU/Metal)
-PRESENCE_MODEL = os.environ.get("PRESENCE_MODEL", "gemma3:1b")
-
-
-async def run_local_presence(elapsed_seconds: int) -> str:
-    """
-    Run a local model via Ollama API with persistent context (KV cache equivalent).
-
-    Ollama's 'context' field contains the token IDs of the full conversation.
-    Passing them back on the next call lets Ollama skip reprocessing cached tokens —
-    functionally equivalent to KV cache persistence.
-
-    Returns the generated text for Claude to read.
-    """
-    current_time = now_local().strftime("%Y-%m-%d %H:%M")
-    elapsed_min  = elapsed_seconds // 60
-    ts = now_local().strftime('%H:%M:%S')
-
-    # Load saved context (token IDs) from previous run
-    context: list[int] = []
-    if OLLAMA_CONTEXT_FILE.exists():
-        try:
-            context = json.loads(OLLAMA_CONTEXT_FILE.read_text())
-        except Exception:
-            context = []
-
-    # First run: include system prompt. Subsequent runs: just the new entry.
-    if not context:
-        prompt = _PRESENCE_SYSTEM + f"\n\n[{current_time}] 第一次醒来。"
-    else:
-        prompt = f"[{current_time}] 距上次{elapsed_min}分钟。继续。"
-
-    data = json.dumps({
-        "model": PRESENCE_MODEL,
-        "prompt": prompt,
-        "stream": False,
-        "context": context,
-        "options": {"num_predict": 80, "temperature": 0.75},
-        "keep_alive": "30m",   # keep model warm in memory
-    }).encode()
-
-    def _call():
-        req = urllib.request.Request(
-            f"{OLLAMA_BASE}/api/generate",
-            data=data,
-            headers={"Content-Type": "application/json"},
-        )
-        with urllib.request.urlopen(req, timeout=120) as resp:
-            return json.loads(resp.read())
-
-    loop = asyncio.get_event_loop()
-    try:
-        result = await asyncio.wait_for(loop.run_in_executor(None, _call), timeout=120)
-        output      = result.get("response", "").strip()
-        new_context = result.get("context", [])
-
-        # Persist context for next run (KV cache continuity)
-        if new_context:
-            OLLAMA_CONTEXT_FILE.parent.mkdir(parents=True, exist_ok=True)
-            OLLAMA_CONTEXT_FILE.write_text(json.dumps(new_context))
-
-        # Log to human-readable stream (for your own reading; not sent to Claude)
-        if output:
-            PRESENCE_LOG.parent.mkdir(parents=True, exist_ok=True)
-            with open(PRESENCE_LOG, "a", encoding="utf-8") as f:
-                f.write(f"\n## [{current_time}] +{elapsed_min}min\n{output}\n")
-
-        ctx_len = len(new_context) if new_context else len(context)
-        print(f"[{ts}] Local presence: context={ctx_len} tokens (silent)")
-
-        # Return empty — local model's KV state accumulates for itself only.
-        # Without text injection, it has no effect on Claude (API boundary).
-        return ""
-
-    except asyncio.TimeoutError:
-        print(f"[{ts}] Local presence timeout")
-        return ""
-    except Exception as e:
-        print(f"[{ts}] Local presence error: {e}")
-        return ""
-
-
 # ─── Heartbeat prompt ─────────────────────────────────────
 
-def build_heartbeat_prompt(local_thought: str = "") -> str:
+def build_heartbeat_prompt() -> str:
     claude_md = GLOBAL_CLAUDE_MD.read_text(encoding="utf-8") if GLOBAL_CLAUDE_MD.exists() else ""
     heartbeat_md = HEARTBEAT_FILE.read_text(encoding="utf-8") if HEARTBEAT_FILE.exists() else ""
     memory_ctx = MEMORY_INDEX.read_text(encoding="utf-8") if MEMORY_INDEX.exists() else "(No memory index)"
     state_ctx = STATE_FILE.read_text(encoding="utf-8") if STATE_FILE.exists() else "(No state file yet)"
     current_time = now_local().strftime("%Y-%m-%d %H:%M (%A)")
     quiet = is_quiet_hours()
-    local_section = f"\n## 本地意识流（来自持久神经状态）\n{local_thought}\n" if local_thought else ""
 
     return f"""You are executing a scheduled heartbeat check.
 
@@ -395,7 +230,7 @@ Current time: {current_time}
 
 ## Identity and Rules
 {claude_md}
-{local_section}
+
 ## Current State (SCDG)
 {state_ctx}
 
@@ -419,9 +254,9 @@ The S/G/D update is your main job this cycle — the timestamp is handled.
 
 # ─── Full inference ───────────────────────────────────────
 
-async def run_heartbeat(local_thought: str = ""):
+async def run_heartbeat():
     """Execute one full Claude inference cycle."""
-    prompt = build_heartbeat_prompt(local_thought)
+    prompt = build_heartbeat_prompt()
 
     HEARTBEAT_MODEL = os.environ.get("HEARTBEAT_MODEL", "claude-haiku-4-5-20251001")
 
@@ -603,7 +438,6 @@ async def presence_loop():
     print(f"  Check interval : {PRESENCE_INTERVAL}s")
     print(f"  Min gap between inferences: {MIN_INFERENCE_INTERVAL}s")
     print(f"  Time fallback  : {HEARTBEAT_INTERVAL}s ({HEARTBEAT_INTERVAL // 60}min)")
-    print(f"  Ollama evaluator: {OLLAMA_MODEL} @ {OLLAMA_BASE}")
     print(f"  Discord outbox : {discord_status}")
     print(f"  Project        : {PROJECT_DIR}")
     print()
@@ -625,13 +459,8 @@ async def presence_loop():
             if should_activate:
                 ts = now_local().strftime('%H:%M:%S')
                 print(f"[{ts}] Triggered ({reason})")
-                stamp_heartbeat_time()  # Python writes timestamp — always reliable
-
-                # Run local qwen with persistent KV cache — neural continuity
-                elapsed = int(time.time() - last_inference_at) if last_inference_at else 0
-                local_thought = await run_local_presence(elapsed)
-
-                await run_heartbeat(local_thought)
+                stamp_heartbeat_time()
+                await run_heartbeat()
                 last_inference_at = time.time()
 
         except Exception as e:
