@@ -112,6 +112,27 @@ def system_status() -> str:
             f"Disk: {disk.used/1e9:.0f}/{disk.total/1e9:.0f}GB ({disk.percent}%)")
 
 
+# ── Interest pool ─────────────────────────────────────────────────────────────
+
+@mcp.tool()
+def interest_add(topic: str, context: str = "") -> str:
+    """Add something to the interest pool — things to explore later.
+    The heartbeat daemon will pick these up during idle cycles and actually look into them.
+    topic: what to explore (e.g. 'Lenia continuous cellular automata')
+    context: why it caught your attention (optional)"""
+    try:
+        from imprint_memory.memory_manager import remember
+        content = f"[INTEREST] {topic}"
+        if context:
+            content += f"\n{context}"
+        remember(content=content, category="interest", source="self", importance=7)
+        return f"Added to interest pool: {topic}"
+    except ImportError:
+        return "Error: imprint-memory not installed"
+    except Exception as e:
+        return f"Error: {e}"
+
+
 # ── Message bus ───────────────────────────────────────────────────────────────
 
 @mcp.tool()

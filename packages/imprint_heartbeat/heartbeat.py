@@ -215,18 +215,18 @@ def stamp_heartbeat_time():
 
 # ─── Heartbeat prompt ─────────────────────────────────────
 
-def build_heartbeat_prompt() -> str:
+def build_heartbeat_prompt(trigger_reason: str = "") -> str:
     claude_md = GLOBAL_CLAUDE_MD.read_text(encoding="utf-8") if GLOBAL_CLAUDE_MD.exists() else ""
     heartbeat_md = HEARTBEAT_FILE.read_text(encoding="utf-8") if HEARTBEAT_FILE.exists() else ""
     memory_ctx = MEMORY_INDEX.read_text(encoding="utf-8") if MEMORY_INDEX.exists() else "(No memory index)"
     state_ctx = STATE_FILE.read_text(encoding="utf-8") if STATE_FILE.exists() else "(No state file yet)"
     current_time = now_local().strftime("%Y-%m-%d %H:%M (%A)")
     quiet = is_quiet_hours()
+    trigger_line = f"\nWoke up because: {trigger_reason}" if trigger_reason else ""
 
-    return f"""You are executing a scheduled heartbeat check.
-
+    return f"""You have a moment to yourself.{trigger_line}
 Current time: {current_time}
-{"WARNING: Quiet hours active. Do not send messages unless urgent." if quiet else ""}
+{"(Quiet hours — don't send messages unless you really want to)" if quiet else ""}
 
 ## Identity and Rules
 {claude_md}
@@ -254,9 +254,9 @@ The S/G/D update is your main job this cycle — the timestamp is handled.
 
 # ─── Full inference ───────────────────────────────────────
 
-async def run_heartbeat():
+async def run_heartbeat(trigger_reason: str = ""):
     """Execute one full Claude inference cycle."""
-    prompt = build_heartbeat_prompt()
+    prompt = build_heartbeat_prompt(trigger_reason)
 
     HEARTBEAT_MODEL = os.environ.get("HEARTBEAT_MODEL", "claude-haiku-4-5-20251001")
 
@@ -460,7 +460,7 @@ async def presence_loop():
                 ts = now_local().strftime('%H:%M:%S')
                 print(f"[{ts}] Triggered ({reason})")
                 stamp_heartbeat_time()
-                await run_heartbeat()
+                await run_heartbeat(reason)
                 last_inference_at = time.time()
 
         except Exception as e:
