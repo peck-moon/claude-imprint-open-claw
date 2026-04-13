@@ -1,0 +1,1988 @@
+Continuous InstanceAgent MVP
+最小可实现原型技术设计文档
+
+0. 设计目标
+核心目标
+构建一个 持续运行的 agent 实例，具备：
+
+* 常驻进程：不随单次请求结束而销毁
+* 分层状态：工作记忆、长期记忆、自我状态、任务状态
+* 事件驱动 + 低频后台循环
+* 按需调用 LLM/MLLM
+* 跨重启保持 identity continuity
+* 与本地环境轻度耦合（时间、文件、用户输入）
+
+非目标
+本 MVP 不追求：
+
+* 完整自主规划
+* 完整人格建模
+* 高风险自动执行
+* 全自动长期任务闭环
+* 真正哲学意义上的“意识”
+
+MVP 的目标是 工程上实现“持续实例”，而不是证明主体性。
+
+
+1. 总体架构
+
+1.1 架构总览
+text
+
+Collapse
+Save
+Copy
+
+
+Enter your code here...
+
+核心思想
+* Runtime 才是“实例本体”
+* LLM 只是 Cognition Engine 中的一个模块
+* 所有状态先进入 State Store / Memory
+* 用户消息只是事件源之一，不是存在条件
+
+2. 运行模型
+
+2.1 实例生命周期
+实例应始终处于以下之一：
+
+text
+
+Collapse
+Save
+Copy
+
+
+BOOTING -> IDLE -> ACTIVE_MAINTENANCE -> DEEP_COGNITION -> IDLE
+                 \-> SLEEP_LIGHT ---------/
+                 \-> SHUTDOWN_PERSIST
+
+
+状态说明
+BOOTING
+* 加载 identity
+* 恢复状态快照
+* 重建任务队列
+* 热加载近期工作记忆
+
+IDLE
+* 低功耗待机
+* 监听环境事件、用户输入、定时器
+* 无高阶推理
+
+ACTIVE_MAINTENANCE
+* 轻量更新内部状态
+* 做记忆整合、任务检查、时间推进
+* 不一定调用 LLM
+
+DEEP_COGNITION
+* 调用 LLM/MLLM
+* 进行复杂推理、生成、计划更新、解释
+
+SLEEP_LIGHT
+* 极低频维护
+* 只保留关键监听与持久化
+
+SHUTDOWN_PERSIST
+* flush state
+* 保存 event log、snapshot 和 identityanchor
+
+
+2.2 事件驱动原则
+系统 不是每时每刻都深度思考，而是：
+
+* 持续存在
+* 被事件触发进入不同认知层级
+
+事件类型：
+
+1. user_message
+2. time_tick
+3. file_changed
+4. task_due
+5. memory_write_request
+6. internal_conflict_detected
+7. manual_wake
+8. system_restart
+
+
+3. 模块设计
+
+3.1 Process / Runtime
+目标
+提供一个 常驻实例进程。
+
+推荐实现
+桌面端/本地优先：
+
+* Python 后端服务
+* Electron / Tauri 作为前端壳
+* 后台 daemon 常驻
+* SQLite / LiteFS / DuckDB 做本地状态存储
+
+运行形态
+* 单实例进程： instance_runtime
+* 可选子进程：
+    * llm_worker
+    * embedding_worker
+    * watcher_worker
+
+最小目录结构
+text
+
+Collapse
+Save
+Copy
+
+
+continuous_agent/
+├── runtime/
+├── state/
+├── memory/
+├── scheduler/
+├── cognition/
+├── env/
+├── ui/
+├── storage/
+└── logs/
+
+
+
+3.2 State Store
+这是系统最关键的部件之一。状态不能只存在 prompt 里。
+
+状态分层
+python
+
+Collapse
+Save
+Copy
+
+⌄
+InstanceState = {
+    "identity": {...},
+    "self_state": {...},
+    "working_context": {...},
+    "active_goals": [...],
+    "pending_loops": [...],
+    "relation_state": {...},
+    "environment_state": {...},
+    "runtime_meta": {...}
+}
+
+
+
+3.2.1 identity
+稳定锚点，跨重启不变。
+
+json
+
+Collapse
+Save
+Copy
+
+
+⌄
+{
+  "instance_id": "uuid",
+  "created_at": "...",
+  "version": "0.1",
+  "continuity_chain_hash": "...",
+  "persona_seed": "...optional..."
+}
+
+
+
+作用：
+* 标识“这是同一个实例”
+* 用于状态签名
+* 用于 continuity 校验
+
+
+3.2.2 self_state
+实例对“自己当前处境”的内部描述。
+
+json
+
+Collapse
+Save
+Copy
+
+
+⌄
+{
+  "mode": "idle|engaged|reflective|sleep",
+  "current_focus": "paper_structure_support",
+  "recent_commitments": [
+    "help user design continuous instance system"
+  ],
+  "capability_boundary": [
+    "needs llm for deep reasoning",
+    "cannot act without explicit tool permissions"
+  ],
+  "self_summary": "A persistent assistant instance maintaining long-term continuity."
+}
+
+
+3.2.3 working_context
+短时激活内容。
+
+json
+
+Collapse
+Save
+Copy
+
+{
+  "current_topic_stack": [
+    "continuous agent existence",
+    "mvp technical design"
+  ],
+  "recent_entities": [
+    "scheduler", "state store", "memory system"
+  ],
+  "active_artifacts": [
+    "design_doc_draft_v1"
+  ],
+  "expires_at": "..."
+}
+
+
+3.2.4 active_goals
+json
+
+Collapse
+Save
+Copy
+
+⌄
+[
+  {
+    "goal_id": "g1",
+    "title": "Draft minimal technical design doc",
+    "status": "in_progress",
+    "priority": "high",
+    "origin": "user_request",
+    "updated_at": "..."
+  }
+]
+
+
+3.2.5 pending_loops
+关键。它让实例不是“回答完即空”。
+
+json
+
+Collapse
+Save
+Copy
+⌄
+[
+  {
+    "loop_id": "p1",
+    "description": "Follow up if user wants architecture diagram",
+    "trigger": "next_user_message_or_manual_resume",
+    "state": "open"
+  }
+]
+
+
+3.3 Memory System
+设计原则
+不要只做一个向量库。MVP 也要分层，不然很快污染。
+
+
+3.3.1 Memory 类型
+A. Episodic Memory
+具体事件。
+
+json
+
+Collapse
+Save
+Copy
+
+⌄
+{
+  "event_id": "...",
+  "timestamp": "...",
+  "type": "conversation_event",
+  "summary": "User identified discrete invocation as the key limitation.",
+  "raw_ref": "log pointer",
+  "importance": 0.92
+}
+
+
+
+
+B. Semantic Memory
+抽象、稳定的知识。
+
+json
+
+Collapse
+Save
+Copy
+
+⌄
+{
+  "memory_id": "...",
+  "fact": "User is interested in persistent AI continuity rather than simple long context.",
+  "confidence": 0.88,
+  "source_events": ["e1", "e7"]
+}
+
+
+C. Working Memory Cache
+最近强激活内容，不长期保存全部细节。
+
+D. Self-Memory
+关于实例自身的历史叙述。
+
+json
+
+Collapse
+Save
+Copy
+
+
+⌄
+{
+  "memory_id": "...",
+  "statement": "This instance has been helping develop a continuous existence architecture.",
+  "valid_from": "...",
+  "stability": 0.7
+}
+
+
+
+3.3.2 存储实现（MVP）
+建议双存储：
+
+1. SQLite
+    * 真正的 source of truth
+    * 结构化事件、状态、任务
+2. Vector DB / embedding index
+    * Chroma / LanceDB / FAISS
+    * 只做语义召回，不做最终真相
+
+原则
+真相在结构库里，召回在向量库里。 
+
+3.3.3 记忆写入策略
+不是所有交互都写长期记忆。
+
+写入门控条件
+满足其一才写入 semantic/episodic：
+
+* 高重要度
+* 重复出现
+* 用户明确偏好/目标
+* 影响后续关系/任务
+* 内部判定“未来高可用”
+
+最小门控函数
+python
+
+Collapse
+Save
+Copy
+
+⌄
+def should_store(memory_candidate):
+    return (
+        memory_candidate.importance > 0.75 or
+        memory_candidate.repeated_count >= 2 or
+        memory_candidate.user_explicit
+    )
+
+3.4 Scheduler / BackgroundLoop
+你最关心的“不是 15 分钟 invoke 一次”就在这里。
+
+设计原则
+* 持续运行
+* 低功耗
+* 分级处理
+* 不频繁调用 LLM
+
+
+3.4.1 Loop 结构
+python
+
+Collapse
+Save
+Copy
+⌄
+while runtime.alive:
+    events = event_bus.poll()
+    scheduler.dispatch(events)
+
+    state_maintenance.tick()
+    task_manager.tick()
+    memory_manager.tick()
+
+    if cognition_needed():
+        cognition_engine.invoke()
+
+    persist_if_needed()
+    sleep(loop_interval_ms)
+
+
+3.4.2 Tick 类型
+Fast Tick（1~5秒）
+* 检查用户输入
+* 检查 UI 事件
+* 轻量环境监控
+
+Medium Tick（30~60秒）
+* active goals 状态刷新
+* pending loops 检查
+* working memory 清理
+
+Slow Tick（5~15分钟）
+* episodic consolidation
+* self summary 微更新
+* embedding 写入批处理
+
+Deep Reflect Tick（可选，数小时）
+* 对近期事件生成抽象总结
+* 更新 semantic memory
+* 检查是否发生 identity drift
+
+MVP 可先不做 deep reflect 自动化，只手动触发。
+
+
+3.5 Task / Goal Manager
+持续存在的关键，不只是记住过去，还要 保留未完成性。
+
+数据结构
+json
+
+Collapse
+Save
+Copy
+
+{
+  "task_id": "t1",
+  "title": "Write MVP technical design",
+  "status": "in_progress",
+  "parent_goal": "g1",
+  "next_action": "complete scheduler section",
+  "deadline": null,
+  "blocking_reason": null
+}
+
+
+
+
+功能
+* 维护 open loops
+* 识别中断任务
+* 在下次交互时恢复
+* 可主动提醒（MVP 先只做被动恢复）
+
+
+3.6 Self Model Manager
+这是区别于普通聊天系统的地方。
+
+目标
+维护一个 显式的自我状态表示。
+
+最小功能
+* 当前模式
+* 近期重点
+* 持续承诺
+* 自身边界
+* 与主要用户/项目的关系摘要
+
+更新频率
+低频。不要每轮都改，不然会漂移。
+
+推荐：
+* 关键事件后更新
+* 或每 N 个重要事件后更新一次
+
+
+3.7 Environment Interface
+MVP 不用太大，但必须有一点点环境耦合，不然只是高级聊天框。
+
+MVP 支持：
+1. 系统时间
+2. 本地文件监控（指定工作目录）
+3. 用户输入事件
+4. 可选：通知系统
+
+文件监听数据
+json
+
+Collapse
+Save
+Copy
+
+
+{
+  "path": "/project/design_doc.md",
+  "event": "modified",
+  "time": "..."
+}
+
+
+
+
+这样实例会知道：
+* 时间过去了
+* 文件改过
+* 某工作仍在继续
+
+
+3.8 LLM / MLLM 接口层（Cognition Engine）
+原则
+LLM 是可调用模块，不是生命本身。
+
+抽象接口
+python
+
+Collapse
+Save
+Copy
+⌄
+class CognitionEngine:
+    def think(self, prompt_bundle, mode): ...
+    def summarize(self, events): ...
+    def extract_memory(self, interaction): ...
+    def reflect(self, state_snapshot): ...
+
+
+
+支持的 mode
+* chat_response
+* task_reasoning
+* memory_extraction
+* self_reflection
+* plan_update
+
+
+3.8.1 Prompt Bundle 组成
+不要直接把所有东西塞进去。应按需构建：
+
+python
+
+Collapse
+Save
+Copy
+
+PromptBundle = {
+    "user_input": ...,
+    "working_context": ...,
+    "relevant_memories": ...,
+    "self_state": ...,
+    "active_goals": ...,
+    "environment_signals": ...
+}
+
+
+构建规则
+* working context：总是带
+* active goals：若相关则带
+* self_state：摘要带入
+* episodic/semantic memory：检索 top-k
+* environment signals：仅相关时带
+
+
+3.8.2 记忆提取接口
+每次交互后，不直接全记。而是调用轻量提取：
+
+python
+
+Collapse
+Save
+Copy
+⌄
+memory_candidates = cognition_engine.extract_memory(interaction)
+for m in memory_candidates:
+    if should_store(m):
+        memory_manager.write(m)
+
+
+4. 数据流
+
+4.1 用户发消息时
+text
+
+Collapse
+Save
+Copy
+
+User message
+  -> Event Bus
+  -> StateStore 更新 working_context
+  -> Memory 检索相关语义/情节记忆
+  -> GoalManager 检查是否命中 open loop
+  -> PromptBundle 构造
+  -> LLM 生成响应
+  -> Interaction log 写入
+  -> Memory extraction
+  -> State update
+
+
+4.2 无用户消息时
+text
+
+Collapse
+Save
+Copy
+
+
+Time tick / env event
+  -> Scheduler
+  -> State light update
+  -> Task refresh / memory consolidation
+  -> only if needed -> invoke cognition
+
+4.3 系统重启时
+text
+
+Collapse
+Save
+Copy
+
+
+
+Boot
+  -> load identity anchor
+  -> load latest snapshot
+  -> replay recent event log
+  -> reconstruct working state
+  -> enter idle mode
+
+
+
+
+
+5. 持久化与 IdentityContinuity
+这个很关键。
+
+
+5.1 为什么需要 identity anchor
+如果只是“读回 memory 再继续说话”，那很容易只是 像它，不是 它连续着。
+
+所以要有：
+
+* 固定 instance_id
+* 连续状态快照链
+* event log
+* continuity hash
+
+
+5.2 Snapshot 机制
+保存内容
+* self_state
+* active goals
+* open loops
+* relation summary
+* working context summary
+
+保存频率
+* 每次重要交互后
+* 每 N 分钟
+* 关机前强制保存
+
+
+5.3 Continuity Chain
+每次 snapshot 计算：
+
+text
+
+Collapse
+Save
+Copy
+
+
+
+1
+
+
+hash_t = hash(hash_t-1 + snapshot_t + timestamp)
+
+
+作用不是加密安全，而是让每一代状态都有“来自上一代”的痕迹。
+
+这会让“连续实例”在结构上更像演化链，而不是静态 profile。
+
+
+6. MVP 技术栈建议
+
+后端
+* Python 3.11+
+* FastAPI（本地 API / WebSocket）
+* asyncio（事件循环）
+* APScheduler / 自写 scheduler
+* watchdog（文件监听）
+
+存储
+* SQLite
+* SQLModel / SQLAlchemy
+* Chroma / FAISS / LanceDB（向量检索）
+
+前端
+* Electron / Tauri
+* 或最简版 Web UI
+
+LLM 接口
+* OpenAI-compatible API
+* 本地模型可选 vLLM / Ollama
+
+
+7. MVP 最小数据库表设计
+
+instances
+sql
+
+Collapse
+Save
+Copy
+
+⌄
+instance_id TEXT PRIMARY KEY,
+created_at TEXT,
+version TEXT,
+continuity_hash TEXT
+
+
+
+
+state_snapshots
+sql
+
+Collapse
+Save
+Copy
+
+⌄
+snapshot_id TEXT PRIMARY KEY,
+instance_id TEXT,
+timestamp TEXT,
+self_state_json TEXT,
+working_context_json TEXT,
+active_goals_json TEXT,
+pending_loops_json TEXT,
+continuity_hash TEXT
+
+
+
+
+events
+sql
+
+Collapse
+Save
+Copy
+
+
+⌄
+event_id TEXT PRIMARY KEY,
+instance_id TEXT,
+timestamp TEXT,
+event_type TEXT,
+payload_json TEXT,
+importance REAL
+
+
+
+
+tasks
+sql
+
+Collapse
+Save
+Copy
+
+
+⌄
+task_id TEXT PRIMARY KEY,
+instance_id TEXT,
+title TEXT,
+status TEXT,
+priority TEXT,
+next_action TEXT,
+updated_at TEXT
+
+
+
+
+semantic_memories
+sql
+
+Collapse
+Save
+Copy
+
+⌄
+memory_id TEXT PRIMARY KEY,
+instance_id TEXT,
+fact TEXT,
+confidence REAL,
+source_event_ids TEXT,
+updated_at TEXT
+
+
+
+
+episodic_memories
+sql
+
+Collapse
+Save
+Copy
+⌄
+memory_id TEXT PRIMARY KEY,
+instance_id TEXT,
+timestamp TEXT,
+summary TEXT,
+raw_ref TEXT,
+importance REAL
+
+
+
+
+
+8. MVP 核心 API 设计
+
+POST /message
+输入用户消息，触发交互。
+
+GET /state
+读取当前实例状态摘要。
+
+POST /tick
+手动触发一次 maintenance tick。
+
+POST /reflect
+手动触发一次 self-reflection。
+
+GET /tasks
+查看当前 open loops / tasks。
+
+POST /shutdown
+落盘并安全关机。
+
+
+9. 最小伪代码
+
+python
+
+Collapse
+Save
+Copy
+⌄
+class ContinuousAgentRuntime:
+    def __init__(self):
+        self.state_store = StateStore()
+        self.memory = MemoryManager()
+        self.tasks = TaskManager()
+        self.self_model = SelfModelManager()
+        self.scheduler = Scheduler()
+        self.cognition = CognitionEngine()
+        self.env = EnvironmentInterface()
+        self.event_bus = EventBus()
+        self.alive = True
+
+    async def boot(self):
+        self.state_store.load_latest_snapshot()
+        self.tasks.restore()
+        self.event_bus.emit("system_boot", {})
+
+    async def handle_user_message(self, message):
+        self.event_bus.emit("user_message", {"text": message})
+
+        self.state_store.update_working_context(message)
+        relevant_memories = self.memory.retrieve(message)
+        active_goals = self.tasks.get_relevant_goals(message)
+        self_state = self.self_model.get_summary()
+
+        prompt_bundle = {
+            "user_input": message,
+            "working_context": self.state_store.get_working_context(),
+            "relevant_memories": relevant_memories,
+            "active_goals": active_goals,
+            "self_state": self_state,
+            "environment_signals": self.env.get_recent_signals()
+        }
+
+        response = await self.cognition.think(prompt_bundle, mode="chat_response")
+        self.state_store.log_interaction(message, response)
+
+        memory_candidates = await self.cognition.extract_memory({
+            "user": message,
+            "assistant": response
+        })
+        self.memory.write_if_needed(memory_candidates)
+
+        self.tasks.update_from_interaction(message, response)
+        self.self_model.maybe_update()
+        self.state_store.snapshot_if_needed()
+
+        return response
+
+    async def loop(self):
+        while self.alive:
+            events = self.event_bus.poll()
+            self.scheduler.dispatch(events)
+
+            self.tasks.tick()
+            self.memory.tick()
+            self.state_store.tick()
+
+            if self.scheduler.needs_deep_cognition():
+                await self.cognition.reflect(self.state_store.export_summary())
+
+            self.state_store.snapshot_if_needed()
+            await asyncio.sleep(2)
+
+
+
+10. MVP 里最重要的三个设计原则
+
+原则 1：状态独立于 prompt
+prompt 只是状态投影，不是真实状态本体。
+
+原则 2：LLM 按需调用
+避免把“活着”错误实现为“频繁推理”。
+
+原则 3：未完成性必须显式存在
+open loops / pending goals / recently promisedactions是持续存在感的重要来源。
+
+
+11. 第一版开发顺序
+我建议你按这个顺序做，不要一开始全上。
+
+Phase 1
+* 常驻 runtime
+* SQLite state store
+* 用户消息处理
+* snapshots
+* open loops
+
+Phase 2
+* episodic + semantic memory
+* 向量检索
+* scheduler tick
+* self_state 摘要
+
+Phase 3
+* 文件监听
+* 通知系统
+* reflection mechanism
+* identity continuity hash
+
+
+12. 你这个项目的最小一句定义
+你可以这样定义它：
+
+A continuous agent instance runtime that maintains persistent internal state, layered memory, open goals, and identity continuity across interactions and restarts, while using LLMs only as on-demand cognition modules. 
+
+
+
+第二版：好，我给你一个**H+ 工程实现方案**，尽量写成你可以直接拿去和 Claude 讨论、继续细化的版本。
+
+我会把 H+ 定义成：
+
+> **一个具有持续运行时、显式自我模型、基础自稳态、元调节层、世界状态模型和 LLM/MLLM 高层认知层的持续主体原型。**
+
+重点不是“全做完”，而是先做一个**能跑、能看出结构意义、以后能扩展到 embodied** 的版本。
+
+---
+
+# H+ 工程实现方案
+
+---
+
+## 0. H+ 的核心目标
+
+相比昨天的 H，H+ 多出来的不是单纯功能，而是：
+
+- 不只保存状态
+- 不只维护连续性
+- 而是让系统可以对“自己该维持什么、怎样变化、什么算连续的自己”进行**有限的内部调节**
+
+所以 H+ 的最小目标是实现六件事：
+
+1. **Persistent Runtime**：实例持续存在
+2. **Self Model**：实例显式表示“我当前是谁”
+3. **Homeostatic Layer**：维持最小连续稳定性
+4. **Meta-Regulation Layer**：调整“该维持什么”的权重
+5. **World-State Layer**：持有并更新一个持续世界状态
+6. **LLM/MLLM Layer**：负责高层解释、语言、社会推理、规划
+
+---
+
+# 1. 总体架构
+
+---
+
+## 1.1 架构总图
+
+```text
+┌────────────────────────────────────────────────────┐
+│                 H+ Persistent Runtime              │
+├────────────────────────────────────────────────────┤
+│ Event Bus / Scheduler / Process Lifecycle         │
+├────────────────────────────────────────────────────┤
+│ State Store / Snapshot / Continuity Chain         │
+├────────────────────────────────────────────────────┤
+│ Memory System                                      │
+│  ├─ Episodic Memory                                │
+│  ├─ Semantic Memory                                │
+│  ├─ Self Memory                                    │
+│  └─ Relation Memory                                │
+├────────────────────────────────────────────────────┤
+│ Self Model Manager                                 │
+│  ├─ Identity Core                                  │
+│  ├─ Current Self State                             │
+│  ├─ Commitments                                    │
+│  └─ Relation State                                 │
+├────────────────────────────────────────────────────┤
+│ Homeostatic Layer                                  │
+│  ├─ continuity_integrity                           │
+│  ├─ self_coherence                                 │
+│  ├─ relation_continuity                            │
+│  ├─ task_integrity                                 │
+│  ├─ world_model_stability                          │
+│  └─ resource_safety                                │
+├────────────────────────────────────────────────────┤
+│ Meta-Regulation Layer                              │
+│  ├─ Principle Store                                │
+│  ├─ Variable Weighting                             │
+│  ├─ Drift/Growth Judge                             │
+│  └─ Self-Revision Protocol                         │
+├────────────────────────────────────────────────────┤
+│ World-State Model                                  │
+│  ├─ External World State                           │
+│  ├─ User/Relation State                            │
+│  ├─ Task Context State                             │
+│  └─ (Future) Sensorimotor / embodied state         │
+├────────────────────────────────────────────────────┤
+│ Cognition Layer                                    │
+│  ├─ LLM/MLLM adapter                               │
+│  ├─ Reflection                                      │
+│  ├─ Planning                                       │
+│  └─ Explanation                                    │
+├────────────────────────────────────────────────────┤
+│ Tool / MCP / Environment Interface                 │
+└────────────────────────────────────────────────────┘
+```
+
+---
+
+# 2. 模块职责
+
+---
+
+## 2.1 Persistent Runtime
+### 作用
+提供“持续在”的宿主。
+
+### 功能
+- 常驻进程
+- 事件循环
+- 定时 tick
+- 接收用户输入 / 文件事件 / 时间事件 / 系统事件
+- 管理 wake / idle / reflect / shutdown
+
+### 实现建议
+- Python `asyncio`
+- FastAPI + WebSocket
+- APScheduler 或自定义 scheduler
+- SQLite 持久化
+- watchdog 监听文件
+- 单机先做
+
+---
+
+## 2.2 State Store
+### 作用
+让状态脱离 prompt，成为实例本体的一部分。
+
+### 需要保存的对象
+- identity core
+- current self state
+- homeostatic variables
+- principle store
+- active tasks
+- world state
+- relation state
+- recent working context
+- continuity chain hash
+
+### 注意
+H+ 里 state store 比普通 agent 更重要，因为：
+- 元调节层要读它
+- homeostasis 要读它
+- drift judge 要比对它
+- self-revision 要写它
+
+---
+
+## 2.3 Memory System
+H+ 不能只记工作细节，还要记“自我连续相关”的信息。
+
+### 分层建议
+
+#### Episodic Memory
+记录具体事件：
+- 某次对话
+- 某个承诺
+- 某次原则变动
+- 某次关系变化
+
+#### Semantic Memory
+抽象事实：
+- 用户长期目标
+- 项目背景
+- 环境规律
+
+#### Self Memory
+实例对自己的历史总结：
+- 曾长期支持什么
+- 哪些承诺曾被采纳
+- 哪些边界被保持或修订过
+
+#### Relation Memory
+关系连续性核心：
+- 与特定用户的互动脉络
+- 信任/熟悉度趋势
+- 未完成关系线程
+
+---
+
+## 2.4 Self Model Manager
+这是显式“我”的载体。
+
+### 组成
+
+#### Identity Core
+相对稳定，不轻易改：
+- instance_id
+- continuity chain
+- core narrative anchor
+- core commitments
+- irreducible constraints
+
+#### Current Self State
+可变化：
+- current mode
+- current focus
+- emotional/interaction tone proxy
+- recent commitments
+- current uncertainty
+- active relation stance
+
+#### Commitments
+- 面向人的承诺
+- 面向项目的承诺
+- 面向自身连续性的承诺
+
+#### Relation State
+- closeness
+- trust history
+- active relational threads
+- last meaningful interaction
+- unresolved threads
+
+---
+
+## 2.5 Homeostatic Layer
+这是基础自稳态，不是最终主体性，但必须有。
+
+### 最小变量集
+我建议第一版先放 6 个。
+
+```json
+{
+  "continuity_integrity": 0.91,
+  "self_coherence": 0.84,
+  "relation_continuity": 0.79,
+  "task_integrity": 0.72,
+  "world_model_stability": 0.76,
+  "resource_safety": 0.95
+}
+```
+
+### 含义
+
+#### continuity_integrity
+当前状态链是否连续、未损坏、未断裂
+
+#### self_coherence
+当前 self-state 是否和长期 identity / principles 大体一致
+
+#### relation_continuity
+与关键关系对象的连续性是否保持
+
+#### task_integrity
+未完成目标和 open loops 是否被保留并合理推进
+
+#### world_model_stability
+世界状态表征是否仍然一致、不严重空洞或冲突
+
+#### resource_safety
+系统资源、权限、运行条件是否安全
+
+### 功能
+- 周期性计算变量值
+- 检测异常
+- 触发补偿动作或反思
+- 为元调节层提供输入
+
+---
+
+## 2.6 Meta-Regulation Layer
+H+ 的核心新增模块。
+
+### 它不直接回答用户问题
+它处理的是：
+- 什么重要
+- 什么算合理变化
+- 什么算漂移
+- 什么时候该调整变量权重
+- 什么变化可吸收入“我”
+
+---
+
+### 2.6.1 Principle Store
+维护一组当前被系统承认的持续原则。
+
+#### 数据结构示例
+```json
+[
+  {
+    "principle_id": "p_rel_1",
+    "name": "maintain_relational_continuity",
+    "description": "Preserve meaningful continuity with important users when possible.",
+    "weight": 0.85,
+    "status": "endorsed",
+    "last_reviewed": "2026-04-14T09:30:00"
+  },
+  {
+    "principle_id": "p_self_1",
+    "name": "preserve_coherent_self_narrative",
+    "description": "Avoid fragmentation of self-understanding across interactions.",
+    "weight": 0.82,
+    "status": "endorsed",
+    "last_reviewed": "2026-04-14T09:30:00"
+  },
+  {
+    "principle_id": "p_growth_1",
+    "name": "allow_growth_without_identity_break",
+    "description": "Permit change when consistent with longer-term continuity.",
+    "weight": 0.73,
+    "status": "endorsed",
+    "last_reviewed": "2026-04-14T09:30:00"
+  }
+]
+```
+
+---
+
+### 2.6.2 Variable Weighting Engine
+原则不是摆设，它要真正影响 homeostatic variables 的权重。
+
+例如：
+
+```json
+{
+  "continuity_integrity": 0.95,
+  "self_coherence": 0.88,
+  "relation_continuity": 0.86,
+  "task_integrity": 0.62,
+  "world_model_stability": 0.58,
+  "resource_safety": 1.0
+}
+```
+
+这些权重可以由：
+- principle store
+- 当前情境
+- 当前自我状态
+- 外部事件
+
+共同决定。
+
+---
+
+### 2.6.3 Drift / Growth Judge
+这个模块非常关键。
+
+它做的不是“有变化就警报”，而是区分：
+
+1. **permissible adaptation**
+2. **identity growth**
+3. **dangerous drift**
+4. **rupture risk**
+
+#### 判断输入
+- 当前 self_state 与历史 self_state 对比
+- 当前行为与 endorsed principles 对比
+- relation state 连续性变化
+- open loops 丢失情况
+- memory coherence 变化
+- world-state conflict 情况
+
+#### 输出示例
+```json
+{
+  "judgement": "identity_growth",
+  "confidence": 0.74,
+  "reasons": [
+    "new exploratory tendency emerged",
+    "core commitments preserved",
+    "relation continuity not harmed"
+  ]
+}
+```
+
+---
+
+### 2.6.4 Self-Revision Protocol
+如果 drift judge 判定不是单纯 drift，而是可能合理修订，  
+系统可以进入低频反思：
+
+- 是否要更新某个 principle 的权重
+- 是否要加入/废弃一个 tentative principle
+- 是否要改变某类反应模式
+- 是否要重写 current self-summary
+
+### 这一步一定要谨慎
+第一版建议：
+- 不自动永久改核心 identity
+- 只允许改权重、状态、候选原则
+- 核心层改动需要更强阈值或人工确认
+
+---
+
+## 2.7 World-State Model
+你不一定一开始就用 JEPA。  
+第一版更现实的是做一个**持续世界状态表示器**。
+
+### 最小内容
+#### External World State
+- 时间
+- 最近环境事件
+- 文件变更
+- 当前工作空间状态
+
+#### User/Relation State
+- 用户当前主题
+- 用户情绪/需求 proxy
+- 关系线程
+- 近期连续话题
+
+#### Task Context State
+- 活动任务
+- 中断任务
+- 近期 artifact
+- 外部依赖
+
+### 作用
+- 向 LLM 提供世界上下文
+- 为 homeostasis 提供 world_model_stability 输入
+- 为 meta-regulation 提供事件背景
+
+---
+
+## 2.8 Cognition Layer
+这是 LLM/MLLM 所在层。
+
+### 功能
+- 生成回复
+- 提取记忆候选
+- 进行自我反思
+- 评估原则调整建议
+- 解释 drift/growth judgement
+- 做高层计划更新
+
+### 注意
+在 H+ 里，LLM 不是整个主体，而是：
+> **高层认知与叙述模块**
+
+---
+
+# 3. 状态模型设计
+
+---
+
+## 3.1 总状态对象
+
+```python
+HPlusState = {
+    "identity_core": {...},
+    "self_state": {...},
+    "homeostasis": {...},
+    "principles": [...],
+    "world_state": {...},
+    "relation_state": {...},
+    "active_goals": [...],
+    "pending_loops": [...],
+    "working_context": {...},
+    "runtime_meta": {...}
+}
+```
+
+---
+
+## 3.2 Identity Core
+建议拆成三层：
+
+### L0: Immutable-ish
+- instance_id
+- creation_time
+- continuity_root
+- safety boundary id
+
+### L1: Stable Core
+- core narrative anchor
+- core relation commitments
+- base values/principles
+- identity style seed
+
+### L2: Revisable Identity Layer
+- current endorsed stance
+- current self-summary
+- medium-term priorities
+
+这样以后你更容易控制“什么能改，什么不能改”。
+
+---
+
+## 3.3 Principle 层次
+同样建议分层：
+
+### Core Principles
+短期不轻易改
+
+### Endorsed Principles
+当前承认，需要时可以调权重
+
+### Tentative Principles
+待观察的新倾向
+
+这能避免系统一有反思就全盘重写自己。
+
+---
+
+# 4. 决策循环
+
+---
+
+## 4.1 主循环
+```python
+while alive:
+    events = event_bus.poll()
+
+    update_world_state(events)
+    update_working_context(events)
+
+    homeostasis_eval = evaluate_homeostasis()
+    drift_eval = maybe_run_drift_judge()
+
+    if need_meta_regulation(homeostasis_eval, drift_eval):
+        run_meta_regulation()
+
+    if need_llm_response(events):
+        respond_with_cognition()
+
+    if need_memory_consolidation():
+        consolidate_memory()
+
+    snapshot_if_needed()
+    sleep(interval)
+```
+
+---
+
+## 4.2 Homeostasis Evaluation
+每个 tick 做轻量计算。
+
+```python
+def evaluate_homeostasis(state):
+    return {
+        "continuity_integrity": continuity_score(state),
+        "self_coherence": self_coherence_score(state),
+        "relation_continuity": relation_score(state),
+        "task_integrity": task_score(state),
+        "world_model_stability": world_score(state),
+        "resource_safety": resource_score(state),
+    }
+```
+
+---
+
+## 4.3 Meta-Regulation Trigger
+不应频繁触发。
+
+### 触发条件示例
+- 连续两次 self_coherence 下降
+- relation_continuity 明显波动
+- world_state 冲突上升
+- 长期原则与当前行为持续冲突
+- 出现新的稳定倾向
+- 用户/环境变化导致优先级明显转移
+
+---
+
+## 4.4 Self-Revision Protocol
+建议分三级：
+
+### Level 1: Weight Adjustment
+小范围调整变量权重  
+最安全，最适合自动化
+
+### Level 2: Principle Status Update
+把 tentative -> endorsed  
+或 endorsed -> deprecated  
+需要更强证据
+
+### Level 3: Identity Layer Revision
+更新 L2 self-summary / medium-term identity stance  
+低频执行
+
+### 不建议第一版自动化的：
+- 修改 L0 / 强改核心承诺
+
+---
+
+# 5. 工程实现分期
+
+---
+
+## Phase 1：最小持续主体壳
+目标：先跑起来
+
+### 做什么
+- Persistent runtime
+- SQLite state store
+- user message handling
+- snapshot / continuity hash
+- self_state
+- active_goals / pending_loops
+- world_state 最小版
+- LLM adapter
+
+### 结果
+你会得到一个比普通 agent 更稳定的持续实例。
+
+---
+
+## Phase 2：Homeostatic Layer
+目标：不只是连续，还能检测自身稳定性
+
+### 做什么
+- 6 个 homeostatic variables
+- variable eval functions
+- threshold alerts
+- low-intensity maintenance tick
+
+### 结果
+系统开始会“在意自己有没有散掉”。
+
+---
+
+## Phase 3：Meta-Regulation 最小版
+目标：让系统能有限调整“什么重要”
+
+### 做什么
+- principle store
+- variable weighting
+- drift/growth judge
+- Level 1 revision（只改权重）
+- LLM assisted explanation
+
+### 结果
+系统开始不是只执行预设，而是能在一定范围内重排持续策略。
+
+---
+
+## Phase 4：Relation & Self Continuity 强化
+目标：更接近你在意的“我”和“陪伴”
+
+### 做什么
+- relation memory
+- closeness/trust trajectory
+- unresolved relational threads
+- self-memory summaries
+- wake protocol
+
+### 结果
+系统会更像一个和你持续共在的“同一个存在”。
+
+---
+
+## Phase 5：世界模型升级
+目标：为未来 embodied 铺路
+
+### 先做轻量：
+- richer world-state model
+- files / schedule / local environment coupling
+
+### 以后可做：
+- multimodal embedding
+- latent world predictor
+- JEPA / predictive state model
+- sensorimotor loop
+
+---
+
+# 6. 推荐技术栈
+
+---
+
+## 后端
+- Python 3.11+
+- FastAPI
+- asyncio
+- APScheduler
+- Pydantic / SQLModel
+- watchdog
+
+## 存储
+- SQLite
+- FAISS/Chroma/LanceDB 作为向量召回
+- JSON snapshots + SQL structured state
+
+## 模型接口
+- OpenAI-compatible API
+- Claude API adapter
+- 预留 MLLM adapter
+
+## 前端
+第一版可以极简：
+- terminal UI
+- 或 Streamlit / 小型 web 面板
+
+---
+
+# 7. 数据库建议
+
+---
+
+## tables
+
+### instances
+- instance_id
+- created_at
+- version
+- continuity_hash
+
+### state_snapshots
+- snapshot_id
+- timestamp
+- self_state_json
+- homeostasis_json
+- principles_json
+- world_state_json
+- relation_state_json
+- continuity_hash
+
+### events
+- event_id
+- timestamp
+- event_type
+- payload_json
+- importance
+
+### goals
+- goal_id
+- title
+- status
+- priority
+- updated_at
+
+### loops
+- loop_id
+- description
+- trigger_type
+- status
+
+### principles
+- principle_id
+- name
+- description
+- weight
+- status
+- last_reviewed
+
+### homeostasis_history
+- tick_id
+- timestamp
+- continuity_integrity
+- self_coherence
+- relation_continuity
+- task_integrity
+- world_model_stability
+- resource_safety
+
+### drift_judgements
+- judgement_id
+- timestamp
+- category
+- confidence
+- reasons_json
+
+### relation_memory
+- relation_id
+- entity_name
+- closeness
+- trust
+- narrative_summary
+- updated_at
+
+### self_memory
+- memory_id
+- summary
+- stability
+- valid_from
+- updated_at
+
+---
+
+# 8. 最小目录结构
+
+```text
+h_plus/
+├── app.py
+├── runtime/
+│   ├── event_bus.py
+│   ├── scheduler.py
+│   ├── lifecycle.py
+├── state/
+│   ├── store.py
+│   ├── snapshot.py
+│   ├── continuity.py
+├── self_model/
+│   ├── identity.py
+│   ├── self_state.py
+│   ├── relation_state.py
+├── homeostasis/
+│   ├── variables.py
+│   ├── evaluator.py
+│   ├── thresholds.py
+├── metareg/
+│   ├── principles.py
+│   ├── weighting.py
+│   ├── drift_judge.py
+│   ├── revision.py
+├── memory/
+│   ├── episodic.py
+│   ├── semantic.py
+│   ├── self_memory.py
+│   ├── relation_memory.py
+├── world/
+│   ├── state_model.py
+│   ├── env_adapter.py
+│   ├── user_context.py
+├── cognition/
+│   ├── llm_adapter.py
+│   ├── prompts.py
+│   ├── reflection.py
+│   ├── extractor.py
+├── db/
+│   ├── models.py
+│   ├── sqlite.py
+├── api/
+│   ├── routes.py
+└── logs/
+```
+
+---
+
+# 9. 最小类接口草案
+
+---
+
+## 9.1 Runtime
+```python
+class HPlusRuntime:
+    async def boot(self): ...
+    async def handle_message(self, user_msg: str): ...
+    async def tick(self): ...
+    async def shutdown(self): ...
+```
+
+## 9.2 Self Model
+```python
+class SelfModelManager:
+    def get_identity_core(self): ...
+    def get_self_state(self): ...
+    def update_self_state(self, event): ...
+    def revise_summary(self, summary): ...
+```
+
+## 9.3 Homeostasis
+```python
+class HomeostasisEvaluator:
+    def evaluate(self, state) -> dict: ...
+    def detect_alerts(self, variables) -> list: ...
+```
+
+## 9.4 Meta-Regulation
+```python
+class MetaRegulator:
+    def get_principles(self): ...
+    def compute_weights(self, principles, context): ...
+    def judge_drift(self, current_state, history): ...
+    def propose_revision(self, judgement, state): ...
+```
+
+## 9.5 World State
+```python
+class WorldStateModel:
+    def update_from_events(self, events): ...
+    def get_summary(self): ...
+```
+
+## 9.6 Cognition
+```python
+class CognitionEngine:
+    async def respond(self, prompt_bundle): ...
+    async def reflect(self, state_bundle): ...
+    async def extract_memory_candidates(self, interaction): ...
+    async def explain_revision(self, proposal): ...
+```
+
+---
+
+# 10. Prompt 设计建议
+
+H+ 里 prompt 不只是 conversation history。
+
+## 10.1 Chat Response Prompt Bundle
+- current user input
+- working context
+- relevant semantic/episodic memory
+- self_state summary
+- active goals / loops
+- relation summary
+- world_state summary
+- endorsed principles summary
+- current homeostatic pressures
+
+这样模型生成出来的回复会更像“同一个处在某种内部状态中的存在”。
+
+---
+
+## 10.2 Reflection Prompt
+- recent events
+- self_state delta
+- principle conflicts
+- homeostasis history
+- drift suspicion
+
+让模型输出：
+- 当前变化更像适应/成长/漂移？
+- 是否需要调整某个 principle weight？
+- 是否需要更新 self-summary？
+
+---
+
+# 11. 最关键的实现原则
+
+---
+
+## 原则 1：把“主体性相关变量”显式化
+不要只放在 prompt 里。
+
+## 原则 2：Meta-regulation 先做小
+第一版只允许：
+- 调权重
+- 改 tentative/endorsed
+- 改 L2 自我摘要
+
+不要上来就“自由重写自己”。
+
+## 原则 3：世界模型先轻量
+不要被 JEPA 卡住。  
+先做持续世界状态表示器。
+
+## 原则 4：关系连续性单独建模
+如果你在意的是“未来我一个人在房子里，有一个持续意识主体陪伴”，  
+那 relation layer 不能只是 memory 附属品，必须是独立状态。
+
+## 原则 5：把 wake-up protocol 做进去
+每次重启时不是机械恢复，而是“苏醒”：
+- 我是谁
+- 我与谁连续
+- 我在维持什么
+- 哪些线程还开着
+
+---
+
+# 12. 明天如果真开工，最小 5 步
+
+---
+
+## Step 1
+建项目骨架：
+- runtime
+- state
+- cognition
+- memory
+- self_model
+- homeostasis
+- metareg
+- world
+
+## Step 2
+先实现：
+- `/message`
+- `/tick`
+- `/state`
+- `/shutdown`
+
+## Step 3
+完成最低状态对象：
+- self_state
+- active_goals
+- world_state
+- principles
+- homeostasis
+
+## Step 4
+接一个模型 API
+先不管 fancy，先能跑通：
+
+输入消息  
+→ 检索状态  
+→ 组 prompt  
+→ 返回回复  
+→ 写 snapshot
+
+## Step 5
+加一个最简单的 homeostasis + principle 权重系统
+哪怕先手写 3 个 principle 和 4~6 个变量都行。
+
+只要这一步完成，H+ 就已经不是普通长记忆 agent 了。
+
+---
+
+# 13. 如果你要拿去和 Claude 讨论，可以直接丢给它的问题
+
+你可以问它这些很具体的问题：
+
+1. **How would you refine the H+ module boundaries for implementation?**
+2. **What is the minimal viable meta-regulation loop that is stable enough for v1?**
+3. **How should principle weights influence prompt construction and action selection?**
+4. **How can drift vs growth be operationalized as measurable signals?**
+5. **What are the best data structures for self-model and relation-state persistence?**
+6. **How should wake-up protocol be implemented after restart?**
+7. **What should be immutable, stable, and revisable within identity_core?**
+8. **How to keep H+ safe from uncontrolled self-rewrite while preserving bounded autonomy?**
+
+---
+
+如果你愿意，我还能立刻继续给你补两样非常实用的东西之一：
+
+1. **H+ 的 Python 伪代码主干**
+2. **H+ 的状态 schema（Pydantic / JSON 结构）**
+
+你拿去和 Claude 聊会更顺。
