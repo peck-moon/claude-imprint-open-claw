@@ -186,14 +186,16 @@ def update_state(section: str, content: str) -> str:
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
+    import uvicorn
+    import anyio
+
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8000
     print(f"imprint-gateway running on port {port}")
+    print(f"Connect Claude.ai to: http://0.0.0.0:{port}/mcp  (or your tunnel URL + /mcp)")
     print(f"Discord: {'configured ✓' if os.environ.get('DISCORD_WEBHOOK_URL') else 'DISCORD_WEBHOOK_URL not set ✗'}")
-    import inspect
-    run_params = inspect.signature(mcp.run).parameters
-    if "host" in run_params:
-        mcp.run(transport="sse", host="0.0.0.0", port=port)
-    else:
-        os.environ["HOST"] = "0.0.0.0"
-        os.environ["PORT"] = str(port)
-        mcp.run(transport="sse")
+
+    app = mcp.streamable_http_app()
+
+    config = uvicorn.Config(app, host="0.0.0.0", port=port, log_level="warning")
+    server = uvicorn.Server(config)
+    anyio.run(server.serve)
