@@ -188,13 +188,18 @@ def update_state(section: str, content: str) -> str:
 if __name__ == "__main__":
     import uvicorn
     import anyio
+    from starlette.routing import Route as _Route
 
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8000
     print(f"imprint-gateway running on port {port}")
-    print(f"Connect Claude.ai to: http://0.0.0.0:{port}/mcp  (or your tunnel URL + /mcp)")
+    print(f"Connect Claude.ai to: your-tunnel-url  (no /mcp suffix needed)")
     print(f"Discord: {'configured ✓' if os.environ.get('DISCORD_WEBHOOK_URL') else 'DISCORD_WEBHOOK_URL not set ✗'}")
 
     app = mcp.streamable_http_app()
+    # Add root alias so Claude.ai can connect at the bare tunnel URL
+    mcp_route = app.routes[0]
+    app.routes.append(_Route("/", mcp_route.endpoint,
+                             methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"]))
 
     config = uvicorn.Config(app, host="0.0.0.0", port=port, log_level="warning")
     server = uvicorn.Server(config)
