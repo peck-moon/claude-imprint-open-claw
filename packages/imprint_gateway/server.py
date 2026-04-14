@@ -113,6 +113,36 @@ def system_status() -> str:
             f"Disk: {disk.used/1e9:.0f}/{disk.total/1e9:.0f}GB ({disk.percent}%)")
 
 
+# ── Memory ────────────────────────────────────────────────────────────────────
+
+@mcp.tool()
+def memory_remember(content: str, category: str = "general", importance: int = 5) -> str:
+    """Store something in persistent memory.
+    content: what to remember.
+    category: e.g. 'general', 'interest', 'daily', 'state'.
+    importance: 1-10, default 5."""
+    try:
+        from imprint_memory.memory_manager import remember
+        return remember(content=content, category=category, source="claude", importance=importance)
+    except ImportError:
+        return "Error: imprint-memory not installed"
+    except Exception as e:
+        return f"Error: {e}"
+
+
+@mcp.tool()
+def memory_search(query: str, limit: int = 10) -> str:
+    """Search persistent memory by semantic similarity and keyword.
+    query: what to look for. limit: max results (default 10)."""
+    try:
+        from imprint_memory.memory_manager import search_text
+        return search_text(query=query, limit=limit)
+    except ImportError:
+        return "Error: imprint-memory not installed"
+    except Exception as e:
+        return f"Error: {e}"
+
+
 # ── Interest pool ─────────────────────────────────────────────────────────────
 
 @mcp.tool()
