@@ -27,6 +27,7 @@ import re
 import urllib.request
 import urllib.parse
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 
 mcp = FastMCP("imprint-gateway")
 
@@ -212,7 +213,10 @@ if __name__ == "__main__":
     print(f"Connect Claude.ai to: your-tunnel-url/mcp")
     print(f"Discord: {'configured ✓' if os.environ.get('DISCORD_WEBHOOK_URL') else 'DISCORD_WEBHOOK_URL not set ✗'}")
 
-    # Set host/port on the FastMCP settings before running
+    # Set host/port and disable DNS rebinding protection (needed for Cloudflare tunnels)
     mcp.settings.host = "0.0.0.0"
     mcp.settings.port = port
+    mcp.settings.transport_security = TransportSecuritySettings(
+        enable_dns_rebinding_protection=False
+    )
     mcp.run(transport="streamable-http")
